@@ -1,8 +1,10 @@
 import csv
 import json
 import os
+import re
 import requests
 import xml.etree.ElementTree as ET
+from urllib.parse import urlparse
 from dotenv import load_dotenv
 
 CHANNELS_FILE = "channels.csv"
@@ -46,6 +48,65 @@ def load_actors(path: str):
                 "chinese_name": chinese_name,
             })
     return actors
+
+
+def normalize_webhook_url(raw_value: str | None) -> str:
+    if raw_value is None:
+        raise ValueError("Missing DISCORD_WEBHOOK_URL in environment.")
+
+    webhook_url = raw_value.strip()
+
+    # Jeśli ktoś wkleił całą linię z .env zamiast samego URL
+    if webhook_url.startswith("DISCORD_WEBHOOK_URL="):
+        webhook_url = webhook_url.split("=", 1)[1].strip()
+
+    # Usuń wszystkie whitespace, także ukryte newline/tab w środku URL
+    webhook_url = re.sub(r"\s+", "", webhook_url)
+
+    # Usuń otaczające cudzysłowy
+    if (
+        (webhook_url.startswith('"') and webhook_url.endswith('"'))
+        or (webhook_url.startswith("'") and webhook_url.endswith("'"))
+    ):
+        webhook_url = webhook_url[1:-1]
+
+    # Usuń otaczające < >
+    if webhook_url.startswith("<") and webhook_url.endswith(">"):
+        webhook_url = webhook_url[1:-1]
+
+    webhook_url = webhook_url.strip()
+
+    if not webhook_url:
+        raise ValueError("DISCORD_WEBHOOK_URL is empty.")
+
+    parsed = urlparse(webhook_url)
+
+    if parsed.scheme not in ("https", "http"):
+        raise ValueError(
+            "DISCORD_WEBHOOK_URL has invalid scheme. It should start with https://"
+        )
+
+    if not parsed.netloc:
+        raise ValueError("DISCORD_WEBHOOK_URL has no hostname.")
+
+    valid_hosts = {
+        "discord.com",
+        "discordapp.com",
+        "ptb.discord.com",
+        "canary.discord.com",
+    }
+
+    if parsed.netloc not in valid_hosts:
+        raise ValueError(
+            f"DISCORD_WEBHOOK_URL has unexpected host: {parsed.netloc}"
+        )
+
+    if "/api/webhooks/" not in parsed.path:
+        raise ValueError(
+            "DISCORD_WEBHOOK_URL does not look like a Discord webhook URL."
+        )
+
+    return webhook_url
 
 
 def fetch_feed(channel_id: str):
@@ -175,9 +236,7 @@ def send_discord_alert(webhook_url: str, channel_name: str, item: dict, matches:
 def main():
     load_dotenv()
 
-    webhook_url = os.getenv("DISCORD_WEBHOOK_URL")
-    if not webhook_url:
-        raise ValueError("Brak DISCORD_WEBHOOK_URL w pliku .env")
+    webhook_url = normalize_webhook_url(os.getenv("DISCORD_WEBHOOK_URL"))
 
     channels = load_channels(CHANNELS_FILE)
     actors = load_actors(ACTORS_FILE)
@@ -194,6 +253,7 @@ def main():
     print(f"Loaded channels: {len(channels)}")
     print(f"Loaded actors:   {len(actors)}")
     print(f"Initialized:     {state['initialized']}")
+    print("Webhook URL validated.")
     print()
 
     total_matches_found = 0
